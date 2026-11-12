@@ -34,6 +34,44 @@ import { runAgent } from './lib/agent.js';
 
 const sessions = new Map();
 let baseUrl = `http://127.0.0.1:${PORT}`;
+// --- Vercel fix: run the agent's store API calls inside the app (no network) ---
+import { Readable } from 'node:stream';
+
+async function internalFetch(input, init = {}) {
+  const url = new URL(String(input));
+  const method = String(init.method || 'GET').toUpperCase();
+  const req = Readable.from(init.body ? [Buffer.from(init.body)] : []);
+  req.method = method;
+  req.url = url.pathname + url.search;
+  req.headers = Object.fromEntries(
+    Object.entries(init.headers || {}).map(([k, v]) => [k.toLowerCase(), v])
+  );
+  let status = 200;
+  const chunks = [];
+  const res = {
+    headersSent: false,
+    writeHead(code) { status = code; this.headersSent = true; },
+    end(chunk) { if (chunk) chunks.push(Buffer.from(chunk)); }
+  };
+  try {
+    await handleApi(req, res, url);
+  } catch (error) {
+    apiError(res, error);
+  }
+  return new Response(Buffer.concat(chunks), {
+    status,
+    headers: { 'content-type': 'application/json' }
+  });
+}
+
+if (process.env.VERCEL) {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (input, init) =>
+    /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?\/api\/store\//.test(String(input))
+      ? internalFetch(input, init)
+      : realFetch(input, init);
+}
+// --- end of Vercel fix ---
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
